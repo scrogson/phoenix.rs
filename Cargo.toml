@@ -7,7 +7,5 @@ description = "Rust client for Phoenix channels"
 license = "MIT"
 
 [dependencies]
-chrono = "0.2.25"
 websocket = "0.17"
 rustc-serialize = "0.3"
-timer = "0.1.6"

@@ -9,10 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::mpsc::{self, channel};
 use std::thread;
+use std::time::Duration;
 use rustc_serialize::json;
-
-use timer::Timer;
-use chrono::Duration;
 
 use websocket::Client;
 use websocket::message::Type;
@@ -29,6 +27,7 @@ pub type WsClient = Client<DataFrame, WsSender<WebSocketStream>, WsReceiver<WebS
 
 /// Used for passing websocket messages in channels
 pub enum WsMessage {
+    Timeout,
     Close,
     Text(String),
     Pong(String),
@@ -36,7 +35,7 @@ pub enum WsMessage {
 
 
 static VSN: &'static str = "1.0.0";
-const DEFAULT_TIMEOUT: u32 = 10000;
+const DEFAULT_TIMEOUT: u64 = 10_000;
 
 pub trait SocketHandler {
     fn on_event(&mut self, socket: &mut Socket, event: Result<Event, Error>, raw_json: &str);
@@ -122,18 +121,19 @@ impl Socket {
             None => return Err(Error::Internal(String::from("No tx!"))),
         };
 
+        let timer = tx.clone();
+        thread::spawn(move || -> () {
+            loop {
+                std::thread::sleep(Duration::from_millis(DEFAULT_TIMEOUT));
+                timer.send(WsMessage::Timeout).unwrap();
+            }
+        });
+
         let (mut sender, mut receiver) = client.split();
 
         handler.on_connect(self);
 
         let child = thread::spawn(move || -> () {
-
-            //let timer = Timer::new();
-            //let _ = timer.schedule_repeating(Duration::seconds(10), || {
-                //let msg_id = self.get_msg_uid();
-                //let msg = format!(r#"{{"event": "heartbeat", "topic":"phoenix", "payload": {{}}, "ref": "{}"}}"#, msg_id);
-                //self.send(&msg);
-            //});
 
             loop {
                 let msg = match rx.recv() {
@@ -148,12 +148,15 @@ impl Socket {
                 };
 
                 match msg {
+                    WsMessage::Timeout => {
+                        let msg = r#"{"event": "heartbeat", "topic":"phoenix", "payload": {}, "ref": null}"#;
+                        sender.send_message(&WebSocketMessage::text(msg)).unwrap();
+                    }
                     WsMessage::Close => {
                         drop(rx);
                         return;
                     }
                     WsMessage::Text(text) => {
-                        println!("{:?}", &text);
                         let msg = WebSocketMessage::text(text);
                         match sender.send_message(&msg) {
                             Ok(_) => {}
@@ -183,15 +186,15 @@ impl Socket {
             }
         });
 
-        {
-            let read_timeout = std::time::Duration::from_secs(30);
-            let mut ws_stream = receiver.get_mut().get_mut();
-            let tcp_stream: &mut std::net::TcpStream = match ws_stream {
-                &mut WebSocketStream::Tcp(ref mut stream) => stream,
-                &mut WebSocketStream::Ssl(ref mut stream) => stream.get_mut(),
-            };
-            try!(tcp_stream.set_read_timeout(Some(read_timeout)));
-        }
+        //{
+            //let read_timeout = Duration::from_secs(30);
+            //let mut ws_stream = receiver.get_mut().get_mut();
+            //let tcp_stream: &mut std::net::TcpStream = match ws_stream {
+                //&mut WebSocketStream::Tcp(ref mut stream) => stream,
+                //&mut WebSocketStream::Ssl(ref mut stream) => stream.get_mut(),
+            //};
+            //try!(tcp_stream.set_read_timeout(Some(read_timeout)));
+        //}
 
         loop {
             let msg_result: WebSocketResult<WebSocketMessage> = receiver.recv_message();
@@ -266,47 +269,47 @@ impl Socket {
     }
 }
 
-///// Thread-safe API for sending messages asynchronously
-//pub struct Sender {
-    //inner: mpsc::Sender<WsMessage>,
-    //msg_num: Arc<AtomicIsize>,
-//}
+/// Thread-safe API for sending messages asynchronously
+pub struct Sender {
+    inner: mpsc::Sender<WsMessage>,
+    msg_num: Arc<AtomicIsize>,
+}
 
-//impl Sender {
-    ///// Get the next message id
-    /////
-    ///// A value returned from this method *must* be included in the JSON payload
-    ///// (the `id` field) when constructing your own message.
-    //pub fn get_msg_uid(&self) -> isize {
-        //self.msg_num.fetch_add(1, Ordering::SeqCst)
-    //}
+impl Sender {
+    /// Get the next message id
+    ///
+    /// A value returned from this method *must* be included in the JSON payload
+    /// (the `id` field) when constructing your own message.
+    pub fn get_msg_uid(&self) -> isize {
+        self.msg_num.fetch_add(1, Ordering::SeqCst)
+    }
 
-    ///// Send a raw message
-    /////
-    ///// Must set `message.id` using result of `get_msg_id()`.
-    /////
-    ///// Success from this API does not guarantee the message is delivered
-    ///// successfully since that runs on a separate task.
-    //pub fn send(&self, raw: &str) -> Result<(), Error> {
-        //try!(self.inner
-            //.send(WsMessage::Text(raw.to_string()))
-            //.map_err(|err| Error::Internal(format!("{}", err))));
-        //Ok(())
-    //}
+    /// Send a raw message
+    ///
+    /// Must set `message.id` using result of `get_msg_id()`.
+    ///
+    /// Success from this API does not guarantee the message is delivered
+    /// successfully since that runs on a separate task.
+    pub fn send(&self, raw: &str) -> Result<(), Error> {
+        try!(self.inner
+            .send(WsMessage::Text(raw.to_string()))
+            .map_err(|err| Error::Internal(format!("{}", err))));
+        Ok(())
+    }
 
-    ///// Send a message to the specified channel id
-    /////
-    ///// Success from this API does not guarantee the message is delivered
-    ///// successfully since that runs on a separate task.
-    //pub fn send_message_chid(&self, chan_id: &str, msg: &str) -> Result<isize, Error> {
-        //let n = self.get_msg_uid();
-        //let msg_json = format!("{}", json::as_json(&msg));
-        //let mstr = format!(r#"{{"id": {},"type": "message", "channel": "{}","text": "{}"}}"#,
-                           //n,
-                           //chan_id,
-                           //&msg_json[1..msg_json.len() - 1]);
+    /// Send a message to the specified channel id
+    ///
+    /// Success from this API does not guarantee the message is delivered
+    /// successfully since that runs on a separate task.
+    pub fn send_message_chid(&self, chan_id: &str, msg: &str) -> Result<isize, Error> {
+        let n = self.get_msg_uid();
+        let msg_json = format!("{}", json::as_json(&msg));
+        let mstr = format!(r#"{{"id": {},"type": "message", "channel": "{}","text": "{}"}}"#,
+                           n,
+                           chan_id,
+                           &msg_json[1..msg_json.len() - 1]);
 
-        //try!(self.send(&mstr[..]));
-        //Ok(n)
-    //}
-//}
+        try!(self.send(&mstr[..]));
+        Ok(n)
+    }
+}

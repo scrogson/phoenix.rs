@@ -11,6 +11,7 @@ pub struct Msg {
 pub enum Event {
     Close,
     Error,
+    Heartbeat,
     Join,
     Leave,
     PresenceDiff,
@@ -25,6 +26,7 @@ impl Decodable for Event {
         match event {
             Some(event) => {
                 match event.as_ref() {
+                    "heartbeat" => Ok(Event::Heartbeat),
                     "phx_close" => Ok(Event::Close),
                     "phx_error" => Ok(Event::Error),
                     "phx_join" => Ok(Event::Join),

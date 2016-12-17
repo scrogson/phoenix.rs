@@ -1,6 +1,4 @@
-extern crate chrono;
 extern crate rustc_serialize;
-extern crate timer;
 extern crate websocket;
 
 pub mod error;

@@ -8,9 +8,11 @@ use std::collections::HashMap;
 struct SocketState;
 
 impl SocketHandler for SocketState {
-    fn on_event(&mut self, socket: &mut Socket, event: Result<Event, Error>, json: &str) {
-        println!("{:?}", json);
-        println!("{:?}", event);
+    fn on_event(&mut self, _socket: &mut Socket, event: Result<Event, Error>, json: &str) {
+        if let Ok(event) = event {
+            println!("{:?}", event);
+            println!("{:?}", json);
+        }
     }
 
     fn on_close(&mut self, _socket: &mut Socket) {
@@ -35,8 +37,6 @@ fn main() {
     params.insert("user_id".to_string(), "sonny".to_string());
 
     let mut socket = Socket::new(&url, Some(params));
-
-    //println!("{:?}", socket);
 
     match socket.connect::<SocketState>(&mut client) {
         Ok(_) => {
